@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="logstash" class="com.coruscations.logback.redis.logstash.RedisLogstashAppender">
+        <redisHostName>localhost</redisHostName>
+        <type>a-log-type</type>
+    </appender>
+    <root level="all">
+        <appender-ref ref="logstash"/>
+    </root>
+</configuration>
