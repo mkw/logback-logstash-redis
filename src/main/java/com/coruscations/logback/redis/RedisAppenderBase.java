@@ -15,24 +15,20 @@
  */
 package com.coruscations.logback.redis;
 
+import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.EventFactory;
 import com.lmax.disruptor.EventHandler;
 import com.lmax.disruptor.ExceptionHandler;
 import com.lmax.disruptor.MultiThreadedClaimStrategy;
 import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.SingleThreadedClaimStrategy;
-import com.lmax.disruptor.SleepingWaitStrategy;
 import com.lmax.disruptor.dsl.Disruptor;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import ch.qos.logback.core.UnsynchronizedAppenderBase;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 
-public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase<E> {
+public abstract class RedisAppenderBase<E, M> extends UnsynchronizedAppenderBase<E> {
 
   // Buffer info
   private int bufferSize = 512;
@@ -45,35 +41,32 @@ public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase
   private int redisDatabase = 0;
 
   protected JedisPool pool;
-  private Disruptor<EventWrapper<E,F>> disruptor;
-  private ExecutorService executor;
+  private Disruptor<EventWrapper<M>> disruptor;
 
   // Must be volatile for shutdown
-  private volatile RingBuffer<EventWrapper<E,F>> ringBuffer;
+  private volatile RingBuffer<EventWrapper<M>> ringBuffer;
 
   @Override
   public void start() {
     this.pool = startJedisPool();
-    EventFactory<EventWrapper<E, F>> eventFactory = new EventFactory<EventWrapper<E, F>>() {
-      public EventWrapper<E, F> newInstance() {
-        return new EventWrapper<E, F>();
+    EventFactory<EventWrapper<M>> eventFactory = new EventFactory<EventWrapper<M>>() {
+      public EventWrapper<M> newInstance() {
+        return new EventWrapper<M>();
       }
     };
-    Disruptor<EventWrapper<E, F>> disruptor = createDisruptor(eventFactory);
+    Disruptor<EventWrapper<M>> disruptor = createDisruptor(eventFactory);
     ringBuffer = disruptor.start();
     this.disruptor = disruptor;
     super.start();
   }
 
   @SuppressWarnings("unchecked")
-  private Disruptor<EventWrapper<E, F>> createDisruptor(
-      EventFactory<EventWrapper<E, F>> eventFactory) {
-    executor = Executors.newCachedThreadPool();
-    Disruptor<EventWrapper<E, F>> disruptor =
-        new Disruptor<EventWrapper<E, F>>(eventFactory, executor,
-                                          new MultiThreadedClaimStrategy(bufferSize),
-                                          new SleepingWaitStrategy());
-    disruptor.handleEventsWith(getEventFormatter()).then(getEventFlusher());
+  private Disruptor<EventWrapper<M>> createDisruptor(
+      EventFactory<EventWrapper<M>> eventFactory) {
+    Disruptor<EventWrapper<M>> disruptor =
+        new Disruptor<EventWrapper<M>>(eventFactory, context.getExecutorService(),
+                                       new MultiThreadedClaimStrategy(bufferSize),
+                                       new BlockingWaitStrategy());
     disruptor.handleExceptionsWith(new ExceptionHandler() {
       @Override
       public void handleEventException(Throwable ex, long sequence, Object event) {
@@ -90,6 +83,7 @@ public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase
         addWarn("Failed to stop Redis appender.", ex);
       }
     });
+    disruptor.handleEventsWith(getEventFlusher());
     return disruptor;
   }
 
@@ -111,9 +105,9 @@ public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase
     return pool;
   }
 
-  public abstract EventHandler<EventWrapper<E, F>> getEventFormatter();
+  public abstract M formatEvent(E eventObject);
 
-  public abstract EventHandler<EventWrapper<E, F>> getEventFlusher();
+  public abstract EventHandler<EventWrapper<M>> getEventFlusher();
 
   @SuppressWarnings("AssignmentToNull")
   @Override
@@ -125,10 +119,6 @@ public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase
       disruptor.shutdown();
       disruptor = null;
     }
-    if (executor != null) {
-      executor.shutdown();
-      executor = null;
-    }
     if (pool != null) {
       pool.destroy();
       pool = null;
@@ -139,13 +129,11 @@ public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase
 
   @Override
   protected final void append(E eventObject) {
-    preprocess(eventObject);
+    M message = formatEvent(eventObject);
     long index = ringBuffer.next();
-    ringBuffer.get(index).setValue(eventObject);
+    ringBuffer.get(index).setMessage(message);
     ringBuffer.publish(index);
   }
-
-  protected abstract void preprocess(E eventObject);
 
   public int getBufferSize() {
     return bufferSize;
@@ -195,25 +183,16 @@ public abstract class RedisAppenderBase<E, F> extends UnsynchronizedAppenderBase
     this.redisDatabase = redisDatabase;
   }
 
-  public final class EventWrapper<E, F> {
+  public final class EventWrapper<E> {
 
-    private E value;
-    private F formatted;
+    private E message;
 
-    public E getValue() {
-      return value;
+    public E getMessage() {
+      return message;
     }
 
-    public void setValue(final E value) {
-      this.value = value;
-    }
-
-    public F getFormatted() {
-      return formatted;
-    }
-
-    public void setFormatted(F formatted) {
-      this.formatted = formatted;
+    public void setMessage(final E message) {
+      this.message = message;
     }
   }
 }

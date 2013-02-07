@@ -43,10 +43,11 @@ import redis.clients.jedis.Jedis;
 public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, String> {
 
   private static final String[] ESCAPE_STRINGS = new String[]{
-      "\\u0000", "\\u0001", "\\u0002", "\\u0003", "\\u0004", "\\u0005", "\\u0006", "\\u0007", "\\b",
-      "\\t", "\\n", "\\u000B", "\\f", "\\r", "\\u000E", "\\u000F", "\\u0010", "\\u0011", "\\u0012",
-      "\\u0013", "\\u0014", "\\u0015", "\\u0016", "\\u0017", "\\u0018", "\\u0019", "\\u001A",
-      "\\u001B", "\\u001C", "\\u001D", "\\u001E", "\\u001F"};
+      "\\\\u0000", "\\\\u0001", "\\\\u0002", "\\\\u0003", "\\\\u0004", "\\\\u0005", "\\\\u0006",
+      "\\\\u0007", "\\\\b", "\\\\t", "\\\\n", "\\\\u000B", "\\\\f", "\\\\r", "\\\\u000E",
+      "\\\\u000F", "\\\\u0010", "\\\\u0011", "\\\\u0012", "\\\\u0013", "\\\\u0014", "\\\\u0015",
+      "\\\\u0016", "\\\\u0017", "\\\\u0018", "\\\\u0019", "\\\\u001A", "\\\\u001B", "\\\\u001C",
+      "\\\\u001D", "\\\\u001E", "\\\\u001F"};
 
   boolean includeCallerData = false;
 
@@ -100,22 +101,10 @@ public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, Stri
 
 
   @Override
-  public EventHandler<EventWrapper<ILoggingEvent, String>> getEventFormatter() {
-    return new LogstashEventFormatter();
-  }
-
-  @Override
-  public EventHandler<EventWrapper<ILoggingEvent, String>> getEventFlusher() {
+  public EventHandler<EventWrapper<String>> getEventFlusher() {
     return new LogstashEventFlusher();
   }
 
-  @Override
-  protected void preprocess(ILoggingEvent eventObject) {
-    eventObject.prepareForDeferredProcessing();
-    if (includeCallerData) {
-      eventObject.getCallerData();
-    }
-  }
 
   public boolean isIncludeCallerData() {
     return includeCallerData;
@@ -133,7 +122,9 @@ public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, Stri
     if (key == null || key.length() == 0) {
       throw new IllegalArgumentException("Key cannot be null or empty.");
     }
-    this.key = escape(key, new StringBuilder(key.length())).toString();
+    StringBuilder sb = new StringBuilder(key.length());
+    escape(key, sb);
+    this.key = sb.toString();
   }
 
   public String getType() {
@@ -171,16 +162,99 @@ public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, Stri
     this.source = sb.toString();
   }
 
+  @Override
+  public String formatEvent(ILoggingEvent event) {
+    StringBuilder sb = new StringBuilder(2047);
+
+    sb.append("{\"@source\":\"");
+    escape(source, sb);
+    sb.append("\",");
+
+    sb.append("\"@tags\":[");
+    appendTags(sb, event);
+    sb.append("],");
+
+    sb.append("\"@fields\":{");
+    appendFields(sb, event);
+    sb.append("},");
+
+    String iso8601Date = iso8601DateFormat.get().format(event.getTimeStamp());
+    sb.append("\"@timestamp\":\"").append(iso8601Date).append("\",");
+
+    sb.append("\"@message\":\"");
+    escape(event.getFormattedMessage(), sb);
+    sb.append("\",");
+    sb.append("\"@type\":\"").append(type).append("\"}");
+    return sb.toString();
+  }
+
+  void appendTags(StringBuilder sb, ILoggingEvent event) {
+    boolean first = true;
+    Marker marker = event.getMarker();
+    if (marker != null) {
+      sb.append("\"");
+      escape(marker.getName(), sb);
+      sb.append("\"");
+      first = false;
+    }
+    String tags = event.getMDCPropertyMap().get("tags");
+    if (tags != null) {
+      // TODO: Consider avoiding split() because of regex cost
+      for (String tag : tags.split("(?m),")) {
+        if (tag == null || tag.length() <= 0) {
+          continue;
+        }
+        if (!first) {
+          sb.append(',');
+        }
+        first = false;
+        sb.append("\"");
+        escape(tag.trim(), sb);
+        sb.append("\"");
+      }
+    }
+  }
+
+  private void appendFields(StringBuilder sb, ILoggingEvent event) {
+    // Start with things we might not always have
+    IThrowableProxy throwableProxy = event.getThrowableProxy();
+    if (throwableProxy != null) {
+      appendField(sb, "stack_trace", ThrowableProxyUtil.asString(throwableProxy)).append(',');
+    }
+    Map<String, String> mdc = event.getMDCPropertyMap();
+    for (Map.Entry<String, String> entry : mdc.entrySet()) {
+      appendField(sb, entry.getKey(), entry.getValue()).append(',');
+    }
+
+    // We always have these
+    appendField(sb, "logger_name", event.getLoggerName()).append(',');
+    appendField(sb, "thread_name", event.getThreadName()).append(',');
+    // Is there any value to this?
+    //appendField(sb, "level_value", String.valueOf(event.getLevel().toInt())).append(',');
+    appendField(sb, "level", event.getLevel().toString());
+  }
+
+  private StringBuilder appendField(StringBuilder sb, String name, String value) {
+    sb.append('"');
+    escape(name, sb);
+    //    sb.append("\":[\"");
+    sb.append("\":\"");
+    escape(value, sb);
+    //    sb.append("\"]");
+    sb.append('"');
+    return sb;
+  }
+
   @SuppressWarnings("ImplicitNumericConversion")
-  private static StringBuilder escape(String input, StringBuilder sb) {
+  private static void escape(String input, StringBuilder sb) {
     for (int i = 0, length = input.length(); i < length; i++) {
       char ch = input.charAt(i);
       switch (ch) {
         case '\\':
-          sb.append("\\\\");
+          sb.append("\\\\\\\\");
           break;
         case '"':
-          sb.append('"');
+          sb.append("\\\"");
           break;
         default:
           if (ch < 0x20) {
@@ -190,18 +264,16 @@ public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, Stri
           }
       }
     }
-    return sb;
   }
 
   private class LogstashEventFlusher
-      implements EventHandler<EventWrapper<ILoggingEvent, String>> {
+      implements EventHandler<EventWrapper<String>> {
 
     private final List<String> jsonStrings = new LinkedList<String>();
 
     @Override
-    public void onEvent(EventWrapper<ILoggingEvent, String> event, long sequence,
-                        boolean endOfBatch) {
-      jsonStrings.add(event.getFormatted());
+    public void onEvent(EventWrapper<String> event, long sequence, boolean endOfBatch) {
+      jsonStrings.add(event.getMessage());
       if (endOfBatch) {
         String[] values = new String[jsonStrings.size()];
         Jedis jedis = pool.getResource();
@@ -216,88 +288,6 @@ public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, Stri
         // Clear regardless of success to we do not leak memory.
         jsonStrings.clear();
       }
-    }
-  }
-
-  private class LogstashEventFormatter
-      implements EventHandler<EventWrapper<ILoggingEvent, String>> {
-
-    @Override
-    public void onEvent(EventWrapper<ILoggingEvent, String> event, long sequence,
-                        boolean endOfBatch) {
-      event.setFormatted(formatEvent(event.getValue()));
-    }
-
-    private String formatEvent(ILoggingEvent event) {
-      StringBuilder sb = new StringBuilder(2047);
-
-      sb.append("{\"@source\":\"");
-      escape(source, sb);
-      sb.append("\",");
-
-      sb.append("\"@tags\":[");
-      appendTags(sb, event);
-      sb.append("],");
-
-      sb.append("\"@fields\":{");
-      appendFields(sb, event);
-      sb.append("},");
-
-      String iso8601Date = iso8601DateFormat.get().format(event.getTimeStamp());
-      sb.append("\"@timestamp\":\"").append(iso8601Date).append("\",");
-
-      sb.append("\"@message\":\"").append(event.getFormattedMessage()).append("\",");
-      sb.append("\"@type\":\"").append(type).append("\"}");
-      return sb.toString();
-    }
-
-    void appendTags(StringBuilder sb, ILoggingEvent event) {
-      boolean first = true;
-      Marker marker = event.getMarker();
-      if (marker != null) {
-        sb.append("\"").append(marker.getName()).append("\"");
-        first = false;
-      }
-      String tags = event.getMDCPropertyMap().get("tags");
-      if (tags != null) {
-        // TODO: Consider avoiding split() because of regex cost
-        for (String tag : tags.split(",")) {
-          if (!first) {
-            sb.append(',');
-          }
-          sb.append("\"").append(tag).append("\"");
-        }
-      }
-    }
-
-    private void appendFields(StringBuilder sb, ILoggingEvent event) {
-      // Start with things we might not always have
-      IThrowableProxy throwableProxy = event.getThrowableProxy();
-      if (throwableProxy != null) {
-        appendField(sb, "stack_trace", ThrowableProxyUtil.asString(throwableProxy)).append(',');
-      }
-      Map<String, String> mdc = event.getMDCPropertyMap();
-      for (Map.Entry<String, String> entry : mdc.entrySet()) {
-        appendField(sb, entry.getKey(), entry.getValue()).append(',');
-      }
-
-      // We always have these
-      appendField(sb, "logger_name", event.getLoggerName()).append(',');
-      appendField(sb, "thread_name", event.getThreadName()).append(',');
-      // Is there any value to this?
-      //appendField(sb, "level_value", String.valueOf(event.getLevel().toInt())).append(',');
-      appendField(sb, "level", event.getLevel().toString());
-    }
-
-    private StringBuilder appendField(StringBuilder sb, String name, String value) {
-      sb.append('"');
-      escape(name, sb);
-      //    sb.append("\":[\"");
-      sb.append("\":\"");
-      escape(value, sb);
-      //    sb.append("\"]");
-      sb.append('"');
-      return sb;
     }
   }
 
