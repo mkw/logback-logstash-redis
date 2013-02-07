@@ -5,7 +5,7 @@
     <groupId>com.coruscations</groupId>
     <artifactId>logback-logstash-redis</artifactId>
     <packaging>jar</packaging>
-    <version>0.2</version>
+    <version>0.3</version>
     <name>logback-logstash-redis</name>
     <url>https://github.com/mkw/logback-logstash-redis</url>
 
