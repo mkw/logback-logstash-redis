@@ -182,7 +182,11 @@ public class RedisLogstashAppender extends RedisAppenderBase<ILoggingEvent, Stri
     sb.append("\"@timestamp\":\"").append(iso8601Date).append("\",");
 
     sb.append("\"@message\":\"");
-    escape(event.getFormattedMessage(), sb);
+    String formattedMessage = event.getFormattedMessage();
+    if (formattedMessage == null) {
+      formattedMessage = "";
+    }
+    escape(formattedMessage, sb);
     sb.append("\",");
     sb.append("\"@type\":\"").append(type).append("\"}");
     return sb.toString();
